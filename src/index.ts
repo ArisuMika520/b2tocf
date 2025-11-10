@@ -25,10 +25,10 @@ export interface Env {
 let s3: S3Client;
 function getS3Client(env: Env): S3Client {
   if (!s3) {
+    const region = env.B2_S3_ENDPOINT.split('.')[1];
     s3 = new S3Client({
-      // env.B2_S3_ENDPOINT 已经包含了 "s3." (例如: s3.us-west-005.backblazeb2.com)
-      endpoint: `https://{env.B2_S3_ENDPOINT}`,
-      region: 'auto',
+      endpoint: `https://${env.B2_S3_ENDPOINT}`,
+      region: region,
       credentials: {
         accessKeyId: env.B2_ACCESS_KEY_ID,
         secretAccessKey: env.B2_SECRET_APPLICATION_KEY,
