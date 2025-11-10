@@ -5,6 +5,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   CreateMultipartUploadCommand,
   UploadPartCommand,
   CompleteMultipartUploadCommand,
@@ -17,16 +18,22 @@ import { XMLParser } from 'fast-xml-parser';
 import { DOMParser } from '@xmldom/xmldom';
 // @ts-ignore
 globalThis.Node = {
-  ELEMENT_NODE: 1, ATTRIBUTE_NODE: 2, TEXT_NODE: 3, CDATA_SECTION_NODE: 4,
-  PROCESSING_INSTRUCTION_NODE: 7, COMMENT_NODE: 8, DOCUMENT_NODE: 9,
-  DOCUMENT_TYPE_NODE: 10, DOCUMENT_FRAGMENT_NODE: 11,
+  ELEMENT_NODE: 1,
+  ATTRIBUTE_NODE: 2,
+  TEXT_NODE: 3,
+  CDATA_SECTION_NODE: 4,
+  PROCESSING_INSTRUCTION_NODE: 7,
+  COMMENT_NODE: 8,
+  DOCUMENT_NODE: 9,
+  DOCUMENT_TYPE_NODE: 10,
+  DOCUMENT_FRAGMENT_NODE: 11,
 };
+// @ts-ignore
 globalThis.DOMParser = DOMParser;
 
 
 const globalXmlParser = new XMLParser();
 
-// 1. 环境变量接口
 export interface Env {
   B2_BUCKET_NAME: string;
   B2_S3_ENDPOINT: string;
@@ -34,7 +41,6 @@ export interface Env {
   B2_SECRET_APPLICATION_KEY: string;
 }
 
-// 2. S3 客户端初始化
 let s3: S3Client;
 function getS3Client(env: Env): S3Client {
   if (!s3) {
@@ -54,7 +60,6 @@ function getS3Client(env: Env): S3Client {
   return s3;
 }
 
-// 3. Worker 主入口
 export default {
   async fetch(
     request: Request,
@@ -69,16 +74,61 @@ export default {
       let path = url.pathname;
       const bucketPathPrefix = '/' + env.B2_BUCKET_NAME;
       let key: string;
+
       if (path.startsWith(bucketPathPrefix + '/')) {
         key = path.substring(bucketPathPrefix.length + 1);
+
       } else if (path === bucketPathPrefix || path === bucketPathPrefix + '/') {
+        key = '';
+
         if (request.method === 'HEAD' || request.method === 'GET') {
           return new Response('Bucket exists (Proxy Validation)', { status: 200 });
         }
+
+        if (request.method === 'POST' && url.searchParams.has('delete')) {
+          const xmlBody = await request.text();
+          const parsedXml = globalXmlParser.parse(xmlBody);
+
+          let objectsArray = parsedXml.Delete?.Object;
+          if (objectsArray && !Array.isArray(objectsArray)) {
+            objectsArray = [objectsArray];
+          }
+
+          const objectsForSdk = objectsArray.map((obj: any) => ({
+            Key: obj.Key,
+          }));
+
+          const deleteCommand = new DeleteObjectsCommand({
+            Bucket: env.B2_BUCKET_NAME,
+            Delete: {
+              Objects: objectsForSdk,
+              Quiet: parsedXml.Delete?.Quiet || false,
+            },
+          });
+
+          const s3Response = await s3Client.send(deleteCommand);
+
+          const deletedXml = s3Response.Deleted?.map((d: any) => `<Deleted><Key>${d.Key}</Key></Deleted>`).join('') || '';
+          const errorsXml = s3Response.Errors?.map((e: any) => `<Error><Key>${e.Key}</Key><Code>${e.Code}</Code><Message>${e.Message}</Message></Error>`).join('') || '';
+
+          const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  ${deletedXml}
+  ${errorsXml}
+</DeleteResult>`;
+
+          return new Response(xmlResponse, {
+            status: 200,
+            headers: { 'Content-Type': 'application/xml' },
+          });
+        }
+
         return new Response('Bucket-level operations (like List) not implemented.', { status: 405 });
+
       } else {
         key = path.substring(1);
       }
+
       if (!key && !url.searchParams.has('uploadId')) {
         return new Response('Invalid path or key.', { status: 400 });
       }
@@ -94,13 +144,11 @@ export default {
         });
       };
 
+
       switch (request.method) {
 
         case 'HEAD':
-            const headCommand = new HeadObjectCommand({
-                Bucket: env.B2_BUCKET_NAME,
-                Key: key
-            });
+            const headCommand = new HeadObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: key });
             const s3Head = await s3Client.send(headCommand);
             const headers = new Headers();
             if (s3Head.ContentType) headers.set('Content-Type', s3Head.ContentType);
@@ -121,6 +169,12 @@ export default {
             if (result.ETag) headers_put.set('Etag', result.ETag);
             return new Response(null, { status: 200, headers: headers_put });
           } else {
+            const putCommand = new PutObjectCommand({
+                Bucket: env.B2_BUCKET_NAME, Key: key,
+                Body: request.body ?? undefined,
+                ContentType: request.headers.get('content-type') ?? undefined,
+            });
+            await s3Client.send(putCommand);
             return new Response(`File ${key} uploaded successfully.`, { status: 200 });
           }
 
@@ -145,12 +199,17 @@ export default {
             });
 
           } else if (url.searchParams.has('uploadId')) {
+
             const xmlBody = await request.text();
             const parsedXml = globalXmlParser.parse(xmlBody);
             let partsArray = parsedXml.CompleteMultipartUpload?.Part;
-            if (partsArray && !Array.isArray(partsArray)) partsArray = [partsArray];
+            if (partsArray && !Array.isArray(partsArray)) {
+              partsArray = [partsArray];
+            }
+
             const partsForSdk = partsArray.map((part: any) => ({
-              ETag: part.ETag, PartNumber: part.PartNumber,
+              ETag: part.ETag,
+              PartNumber: part.PartNumber,
             }));
 
             const completeUploadCommand = new CompleteMultipartUploadCommand({
@@ -158,6 +217,7 @@ export default {
               UploadId: url.searchParams.get('uploadId')!,
               MultipartUpload: { Parts: partsForSdk, },
             });
+
             const s3Response = await s3Client.send(completeUploadCommand);
 
             const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
@@ -181,7 +241,18 @@ export default {
           return proxyS3GetResponse(s3Object);
 
         case 'DELETE':
-           return new Response('Deleted', { status: 200 });
+           if (url.searchParams.has('uploadId')) {
+            const abortCommand = new AbortMultipartUploadCommand({
+              Bucket: env.B2_BUCKET_NAME, Key: key,
+              UploadId: url.searchParams.get('uploadId')!,
+            });
+            await s3Client.send(abortCommand);
+            return new Response('Multipart upload aborted.', { status: 204 });
+          } else {
+            const deleteCommand = new DeleteObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: key });
+            await s3Client.send(deleteCommand);
+            return new Response(`File ${key} deleted successfully.`, { status: 200 });
+          }
 
         default:
           return new Response('Method Not Allowed', { status: 405 });
