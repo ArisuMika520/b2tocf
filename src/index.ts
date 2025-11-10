@@ -10,6 +10,7 @@ import {
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
   HeadObjectCommand,
+  PutBucketCorsCommand,
 } from '@aws-sdk/client-s3';
 
 import { XMLParser } from 'fast-xml-parser';
@@ -83,6 +84,7 @@ export default {
         });
       }
 
+
       let path = url.pathname;
       const bucketPathPrefix = '/' + env.B2_BUCKET_NAME;
       let key: string;
@@ -96,6 +98,36 @@ export default {
           return new Response('Bucket exists (Proxy Validation)', {
             status: 200,
             headers: corsHeaders
+          });
+        }
+
+        if (request.method === 'PUT' && url.searchParams.has('cors')) {
+          const xmlBody = await request.text();
+          const parsedXml = globalXmlParser.parse(xmlBody);
+
+          let rules = parsedXml.CORSConfiguration?.CORSRule;
+          if (rules && !Array.isArray(rules)) rules = [rules];
+
+          const corsRulesForSdk = rules.map((rule: any) => ({
+            AllowedHeaders: Array.isArray(rule.AllowedHeader) ? rule.AllowedHeader : (rule.AllowedHeader ? [rule.AllowedHeader] : []),
+            AllowedMethods: Array.isArray(rule.AllowedMethod) ? rule.AllowedMethod : (rule.AllowedMethod ? [rule.AllowedMethod] : []),
+            AllowedOrigins: Array.isArray(rule.AllowedOrigin) ? rule.AllowedOrigin : (rule.AllowedOrigin ? [rule.AllowedOrigin] : []),
+            ExposeHeaders: Array.isArray(rule.ExposeHeader) ? rule.ExposeHeader : (rule.ExposeHeader ? [rule.ExposeHeader] : []),
+            MaxAgeSeconds: rule.MaxAgeSeconds,
+          }));
+
+          const putCorsCommand = new PutBucketCorsCommand({
+            Bucket: env.B2_BUCKET_NAME,
+            CORSConfiguration: {
+              CORSRules: corsRulesForSdk,
+            },
+          });
+
+          await s3Client.send(putCorsCommand);
+
+          return new Response(null, {
+            status: 200,
+            headers: corsHeaders,
           });
         }
 
@@ -169,8 +201,6 @@ export default {
 
             const b2Headers = new Headers(request.headers);
             b2Headers.set('Host', env.B2_S3_ENDPOINT);
-
-            console.log(`Proxying pre-signed PUT to: ${b2Url}`);
 
             const b2Response = await fetch(b2Url, {
               method: 'PUT',
