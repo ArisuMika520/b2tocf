@@ -24,7 +24,22 @@ export interface Env {
 let s3: S3Client;
 function getS3Client(env: Env): S3Client {
   if (!s3) {
+
+	// 强制打印出 Worker 认为的 Secrets 是什么
+    console.log('--- Initializing S3 Client ---');
+    console.log(`B2_BUCKET_NAME: ${env.B2_BUCKET_NAME ? 'SET' : '!!! UNDEFINED !!!'}`);
+    console.log(`B2_S3_ENDPOINT: ${env.B2_S3_ENDPOINT || '!!! UNDEFINED !!!'}`);
+    console.log(`B2_ACCESS_KEY_ID: ${env.B2_ACCESS_KEY_ID ? 'SET' : '!!! UNDEFINED !!!'}`);
+    console.log(`B2_SECRET_APPLICATION_KEY: ${env.B2_SECRET_APPLICATION_KEY ? 'SET' : '!!! UNDEFINED !!!'}`);
+    // ----------------------------
+
+	// 如果 Endpoint 未定义，则立即抛出有意义的错误
+    if (!env.B2_S3_ENDPOINT) {
+      throw new Error("B2_S3_ENDPOINT secret is not set in Cloudflare Worker!");
+    }
+
     const region = env.B2_S3_ENDPOINT.split('.')[1];
+	console.log(`Parsed Region: ${region}`);
 
     s3 = new S3Client({
       endpoint: `https://${env.B2_S3_ENDPOINT}`,
@@ -34,6 +49,7 @@ function getS3Client(env: Env): S3Client {
         secretAccessKey: env.B2_SECRET_APPLICATION_KEY,
       },
     });
+	console.log('S3 Client Initialized Successfully.');
   }
   return s3;
 }
@@ -167,7 +183,9 @@ export default {
           return new Response('Method Not Allowed', { status: 405 });
       }
     } catch (error: any) {
-      console.error('S3 Proxy Error:', error);
+      // (安全的 Catch 块)
+      console.error('--- !!! S3 Proxy Error Caught !!! ---');
+      console.error(error); // 在日志中看完整错误
 
       const errorMessage = `S3 Error: ${error.name || 'UnknownError'} - ${error.message || 'No details'}`;
 
@@ -175,7 +193,7 @@ export default {
         message: errorMessage,
         code: error.name || "UnknownError",
       }), {
-        status: error.$metadata?.httpStatusCode ?? 500, // 尝试获取 S3 状态码
+        status: 500, // 总是返回 500，因为 S3 客户端可能不认 $metadata 状态
         headers: {'Content-Type': 'application/json'}
       });
     }
