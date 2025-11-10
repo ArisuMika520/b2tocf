@@ -7,7 +7,6 @@ import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
   CreateMultipartUploadCommand,
-  UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
   HeadObjectCommand,
@@ -83,7 +82,6 @@ export default {
           headers: corsHeaders,
         });
       }
-
 
       let path = url.pathname;
       const bucketPathPrefix = '/' + env.B2_BUCKET_NAME;
@@ -165,25 +163,39 @@ export default {
             return new Response(null, { status: 200, headers: headHeaders });
 
         case 'PUT':
-          if (url.searchParams.has('partNumber') && url.searchParams.has('uploadId')) {
+          if (url.searchParams.has('uploadId') && url.searchParams.has('partNumber')) {
 
-            const partBuffer = await request.arrayBuffer();
+            const b2Url = `https://${env.B2_S3_ENDPOINT}${url.pathname}${url.search}`;
 
-            const uploadPartCommand = new UploadPartCommand({
-              Bucket: env.B2_BUCKET_NAME, Key: key,
-              UploadId: url.searchParams.get('uploadId')!,
-              PartNumber: parseInt(url.searchParams.get('partNumber')!, 10),
-              Body: partBuffer,
-              ContentLength: partBuffer.byteLength,
+            const b2Headers = new Headers(request.headers);
+            b2Headers.set('Host', env.B2_S3_ENDPOINT);
+
+            console.log(`Proxying pre-signed PUT to: ${b2Url}`);
+
+            const b2Response = await fetch(b2Url, {
+              method: 'PUT',
+              headers: b2Headers,
+              body: request.body,
+              // @ts-ignore
+              backend: "aws",
             });
-            const result = await s3Client.send(uploadPartCommand);
-            const putHeaders = new Headers(corsHeaders);
-            if (result.ETag) putHeaders.set('Etag', result.ETag);
-            return new Response(null, { status: 200, headers: putHeaders });
+
+            const responseHeaders = new Headers(b2Response.headers);
+            for (const [key, value] of Object.entries(corsHeaders)) {
+              responseHeaders.set(key, value);
+            }
+
+            return new Response(b2Response.body, {
+              status: b2Response.status,
+              statusText: b2Response.statusText,
+              headers: responseHeaders,
+            });
+
           } else {
+            const bodyBuffer = await request.arrayBuffer();
             const putCommand = new PutObjectCommand({
                 Bucket: env.B2_BUCKET_NAME, Key: key,
-                Body: request.body ?? undefined,
+                Body: bodyBuffer,
                 ContentType: request.headers.get('content-type') ?? undefined,
             });
             await s3Client.send(putCommand);
@@ -249,9 +261,7 @@ export default {
               UploadId: url.searchParams.get('uploadId')!,
             });
             await s3Client.send(abortCommand);
-
             return new Response(null, { status: 204, headers: corsHeaders });
-
           } else {
             const deleteCommand = new DeleteObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: key });
             await s3Client.send(deleteCommand);
