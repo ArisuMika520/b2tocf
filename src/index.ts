@@ -142,7 +142,7 @@ export default {
       }
 
       const proxyS3GetResponse = async (s3Response: any): Promise<Response> => {
-        const headers = new Headers(corsHeaders); // 总是包含 CORS
+        const headers = new Headers(corsHeaders);
         if (s3Response.ContentType) headers.set('Content-Type', s3Response.ContentType);
         if (s3Response.ContentLength) headers.set('Content-Length', s3Response.ContentLength.toString());
         if (s3Response.ETag) headers.set('Etag', s3Response.ETag);
@@ -166,17 +166,27 @@ export default {
 
         case 'PUT':
           if (url.searchParams.has('partNumber') && url.searchParams.has('uploadId')) {
+
+            const partBuffer = await request.arrayBuffer();
+
             const uploadPartCommand = new UploadPartCommand({
               Bucket: env.B2_BUCKET_NAME, Key: key,
               UploadId: url.searchParams.get('uploadId')!,
               PartNumber: parseInt(url.searchParams.get('partNumber')!, 10),
-              Body: request.body,
+              Body: partBuffer,
+              ContentLength: partBuffer.byteLength,
             });
             const result = await s3Client.send(uploadPartCommand);
             const putHeaders = new Headers(corsHeaders);
             if (result.ETag) putHeaders.set('Etag', result.ETag);
             return new Response(null, { status: 200, headers: putHeaders });
           } else {
+            const putCommand = new PutObjectCommand({
+                Bucket: env.B2_BUCKET_NAME, Key: key,
+                Body: request.body ?? undefined,
+                ContentType: request.headers.get('content-type') ?? undefined,
+            });
+            await s3Client.send(putCommand);
             return new Response(`File ${key} uploaded successfully.`, { status: 200, headers: corsHeaders });
           }
 
@@ -234,8 +244,17 @@ export default {
 
         case 'DELETE':
            if (url.searchParams.has('uploadId')) {
-            return new Response('Multipart upload aborted.', { status: 204, headers: corsHeaders });
+            const abortCommand = new AbortMultipartUploadCommand({
+              Bucket: env.B2_BUCKET_NAME, Key: key,
+              UploadId: url.searchParams.get('uploadId')!,
+            });
+            await s3Client.send(abortCommand);
+
+            return new Response(null, { status: 204, headers: corsHeaders });
+
           } else {
+            const deleteCommand = new DeleteObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: key });
+            await s3Client.send(deleteCommand);
             return new Response(`File ${key} deleted successfully.`, { status: 200, headers: corsHeaders });
           }
 
