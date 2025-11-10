@@ -16,6 +16,7 @@ import {
 
 import { XMLParser } from 'fast-xml-parser';
 
+// 1. 安装: npm install @xmldom/xmldom
 import { DOMParser } from '@xmldom/xmldom';
 // @ts-ignore
 globalThis.Node = {
@@ -29,7 +30,6 @@ globalThis.DOMParser = DOMParser;
 
 const globalXmlParser = new XMLParser();
 
-// 1. 环境变量接口
 export interface Env {
   B2_BUCKET_NAME: string;
   B2_S3_ENDPOINT: string;
@@ -37,7 +37,6 @@ export interface Env {
   B2_SECRET_APPLICATION_KEY: string;
 }
 
-// 2. S3 客户端初始化
 let s3: S3Client;
 function getS3Client(env: Env): S3Client {
   if (!s3) {
@@ -57,7 +56,6 @@ function getS3Client(env: Env): S3Client {
   return s3;
 }
 
-// 3. Worker 主入口
 export default {
   async fetch(
     request: Request,
@@ -194,6 +192,7 @@ export default {
               Bucket: env.B2_BUCKET_NAME, Key: key,
               UploadId: url.searchParams.get('uploadId')!,
               PartNumber: parseInt(url.searchParams.get('partNumber')!, 10),
+
               Body: request.body,
               ContentLength: parseInt(contentLength, 10),
             });
