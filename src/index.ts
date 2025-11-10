@@ -7,6 +7,7 @@ import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
   CreateMultipartUploadCommand,
+  UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
   HeadObjectCommand,
@@ -104,10 +105,8 @@ export default {
         if (request.method === 'PUT' && url.searchParams.has('cors')) {
           const xmlBody = await request.text();
           const parsedXml = globalXmlParser.parse(xmlBody);
-
           let rules = parsedXml.CORSConfiguration?.CORSRule;
           if (rules && !Array.isArray(rules)) rules = [rules];
-
           const corsRulesForSdk = rules.map((rule: any) => ({
             AllowedHeaders: Array.isArray(rule.AllowedHeader) ? rule.AllowedHeader : (rule.AllowedHeader ? [rule.AllowedHeader] : []),
             AllowedMethods: Array.isArray(rule.AllowedMethod) ? rule.AllowedMethod : (rule.AllowedMethod ? [rule.AllowedMethod] : []),
@@ -115,20 +114,12 @@ export default {
             ExposeHeaders: Array.isArray(rule.ExposeHeader) ? rule.ExposeHeader : (rule.ExposeHeader ? [rule.ExposeHeader] : []),
             MaxAgeSeconds: rule.MaxAgeSeconds,
           }));
-
           const putCorsCommand = new PutBucketCorsCommand({
             Bucket: env.B2_BUCKET_NAME,
-            CORSConfiguration: {
-              CORSRules: corsRulesForSdk,
-            },
+            CORSConfiguration: { CORSRules: corsRulesForSdk, },
           });
-
           await s3Client.send(putCorsCommand);
-
-          return new Response(null, {
-            status: 200,
-            headers: corsHeaders,
-          });
+          return new Response(null, { status: 200, headers: corsHeaders, });
         }
 
         if (request.method === 'POST' && url.searchParams.has('delete')) {
@@ -137,13 +128,11 @@ export default {
           let objectsArray = parsedXml.Delete?.Object;
           if (objectsArray && !Array.isArray(objectsArray)) objectsArray = [objectsArray];
           const objectsForSdk = objectsArray.map((obj: any) => ({ Key: obj.Key }));
-
           const deleteCommand = new DeleteObjectsCommand({
             Bucket: env.B2_BUCKET_NAME,
             Delete: { Objects: objectsForSdk, Quiet: parsedXml.Delete?.Quiet || false },
           });
           const s3Response = await s3Client.send(deleteCommand);
-
           const deletedXml = s3Response.Deleted?.map((d: any) => `<Deleted><Key>${d.Key}</Key></Deleted>`).join('') || '';
           const errorsXml = s3Response.Errors?.map((e: any) => `<Error><Key>${e.Key}</Key><Code>${e.Code}</Code><Message>${e.Message}</Message></Error>`).join('') || '';
           const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
@@ -151,7 +140,6 @@ export default {
   ${deletedXml}
   ${errorsXml}
 </DeleteResult>`;
-
           return new Response(xmlResponse, {
             status: 200,
             headers: { ...corsHeaders, 'Content-Type': 'application/xml' },
@@ -195,31 +183,26 @@ export default {
             return new Response(null, { status: 200, headers: headHeaders });
 
         case 'PUT':
-          if (url.searchParams.has('uploadId') && url.searchParams.has('partNumber')) {
+          if (url.searchParams.has('partNumber') && url.searchParams.has('uploadId')) {
 
-            const b2Url = `https://${env.B2_S3_ENDPOINT}${url.pathname}${url.search}`;
-
-            const b2Headers = new Headers(request.headers);
-            b2Headers.set('Host', env.B2_S3_ENDPOINT);
-
-            const b2Response = await fetch(b2Url, {
-              method: 'PUT',
-              headers: b2Headers,
-              body: request.body,
-              // @ts-ignore
-              backend: "aws",
-            });
-
-            const responseHeaders = new Headers(b2Response.headers);
-            for (const [key, value] of Object.entries(corsHeaders)) {
-              responseHeaders.set(key, value);
+            const contentLength = request.headers.get('content-length');
+            if (!contentLength) {
+              return new Response('Content-Length is required for PUT part', { status: 400, headers: corsHeaders });
             }
 
-            return new Response(b2Response.body, {
-              status: b2Response.status,
-              statusText: b2Response.statusText,
-              headers: responseHeaders,
+            const uploadPartCommand = new UploadPartCommand({
+              Bucket: env.B2_BUCKET_NAME, Key: key,
+              UploadId: url.searchParams.get('uploadId')!,
+              PartNumber: parseInt(url.searchParams.get('partNumber')!, 10),
+              Body: request.body,
+              ContentLength: parseInt(contentLength, 10),
             });
+
+            const result = await s3Client.send(uploadPartCommand);
+
+            const putHeaders = new Headers(corsHeaders);
+            if (result.ETag) putHeaders.set('Etag', result.ETag);
+            return new Response(null, { status: 200, headers: putHeaders });
 
           } else {
             const bodyBuffer = await request.arrayBuffer();
