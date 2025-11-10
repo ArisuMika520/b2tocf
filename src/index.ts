@@ -10,7 +10,6 @@ import {
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
-//导入 XML 解析器
 import { XMLParser } from 'fast-xml-parser';
 
 // 1. 环境变量接口
@@ -26,9 +25,10 @@ let s3: S3Client;
 function getS3Client(env: Env): S3Client {
   if (!s3) {
     const region = env.B2_S3_ENDPOINT.split('.')[1];
+
     s3 = new S3Client({
       endpoint: `https://${env.B2_S3_ENDPOINT}`,
-      region: region, // 使用解析出的显式区域
+      region: region,
       credentials: {
         accessKeyId: env.B2_ACCESS_KEY_ID,
         secretAccessKey: env.B2_SECRET_APPLICATION_KEY,
@@ -38,7 +38,6 @@ function getS3Client(env: Env): S3Client {
   return s3;
 }
 
-// 创建一个 XML 解析器实例 (用于解析客户端发来的 XML)
 const xmlParser = new XMLParser();
 
 // 3. Worker 主入口
@@ -75,8 +74,6 @@ export default {
       if (s3Response.ContentType) headers.set('Content-Type', s3Response.ContentType);
       if (s3Response.ContentLength) headers.set('Content-Length', s3Response.ContentLength.toString());
       if (s3Response.ETag) headers.set('Etag', s3Response.ETag);
-
-
       return new Response(s3Response.Body as ReadableStream | null, {
         status: s3Response.$metadata?.httpStatusCode ?? 200,
         headers: headers,
@@ -89,22 +86,18 @@ export default {
         case 'PUT':
           if (url.searchParams.has('partNumber') && url.searchParams.has('uploadId')) {
             const uploadPartCommand = new UploadPartCommand({
-              Bucket: env.B2_BUCKET_NAME,
-              Key: key,
+              Bucket: env.B2_BUCKET_NAME, Key: key,
               UploadId: url.searchParams.get('uploadId')!,
               PartNumber: parseInt(url.searchParams.get('partNumber')!, 10),
               Body: request.body,
             });
             const result = await s3Client.send(uploadPartCommand);
-
             const headers = new Headers();
             if (result.ETag) headers.set('Etag', result.ETag);
             return new Response(null, { status: 200, headers: headers });
-
           } else {
             const putCommand = new PutObjectCommand({
-              Bucket: env.B2_BUCKET_NAME,
-              Key: key,
+              Bucket: env.B2_BUCKET_NAME, Key: key,
               Body: request.body ?? undefined,
               ContentType: request.headers.get('content-type') ?? undefined,
             });
@@ -115,82 +108,57 @@ export default {
         case 'POST':
           if (url.searchParams.has('uploads')) {
             const createUploadCommand = new CreateMultipartUploadCommand({
-              Bucket: env.B2_BUCKET_NAME,
-              Key: key,
+              Bucket: env.B2_BUCKET_NAME, Key: key,
               ContentType: request.headers.get('content-type') ?? undefined,
             });
             const s3Response = await s3Client.send(createUploadCommand);
-
             const jsonResponse = {
-              UploadId: s3Response.UploadId,
-              Key: s3Response.Key,
-              Bucket: s3Response.Bucket,
+              UploadId: s3Response.UploadId, Key: s3Response.Key, Bucket: s3Response.Bucket,
             };
-
             return new Response(JSON.stringify(jsonResponse), {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
+              status: 200, headers: { 'Content-Type': 'application/json' },
             });
 
           } else if (url.searchParams.has('uploadId')) {
-
             const xmlBody = await request.text();
             const parsedXml = xmlParser.parse(xmlBody);
             let partsArray = parsedXml.CompleteMultipartUpload?.Part;
-            if (partsArray && !Array.isArray(partsArray)) {
-              partsArray = [partsArray];
-            }
+            if (partsArray && !Array.isArray(partsArray)) partsArray = [partsArray];
             const partsForSdk = partsArray.map((part: any) => ({
-              ETag: part.ETag,
-              PartNumber: part.PartNumber,
+              ETag: part.ETag, PartNumber: part.PartNumber,
             }));
 
             const completeUploadCommand = new CompleteMultipartUploadCommand({
-              Bucket: env.B2_BUCKET_NAME,
-              Key: key,
+              Bucket: env.B2_BUCKET_NAME, Key: key,
               UploadId: url.searchParams.get('uploadId')!,
-              MultipartUpload: {
-                Parts: partsForSdk,
-              },
+              MultipartUpload: { Parts: partsForSdk, },
             });
             const s3Response = await s3Client.send(completeUploadCommand);
-
             const jsonResponse = {
-              Location: s3Response.Location,
-              Bucket: s3Response.Bucket,
-              Key: s3Response.Key,
-              ETag: s3Response.ETag,
+              Location: s3Response.Location, Bucket: s3Response.Bucket,
+              Key: s3Response.Key, ETag: s3Response.ETag,
             };
-
             return new Response(JSON.stringify(jsonResponse), {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
+              status: 200, headers: { 'Content-Type': 'application/json' },
             });
           }
           return new Response('Invalid POST request', { status: 400 });
 
         case 'GET':
-          const getCommand = new GetObjectCommand({
-            Bucket: env.B2_BUCKET_NAME,
-            Key: key,
-          });
+          const getCommand = new GetObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: key });
           const s3Object = await s3Client.send(getCommand);
           return proxyS3GetResponse(s3Object);
 
         case 'DELETE':
           if (url.searchParams.has('uploadId')) {
             const abortCommand = new AbortMultipartUploadCommand({
-              Bucket: env.B2_BUCKET_NAME,
-              Key: key,
+              Bucket: env.B2_BUCKET_NAME, Key: key,
               UploadId: url.searchParams.get('uploadId')!,
             });
             await s3Client.send(abortCommand);
             return new Response('Multipart upload aborted.', { status: 204 });
           } else {
-            const deleteCommand = new DeleteObjectCommand({
-              Bucket: env.B2_BUCKET_NAME,
-              Key: key,
-            });
+            const deleteCommand = new DeleteObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: key });
             await s3Client.send(deleteCommand);
             return new Response(`File ${key} deleted successfully.`, { status: 200 });
           }
@@ -199,13 +167,15 @@ export default {
           return new Response('Method Not Allowed', { status: 405 });
       }
     } catch (error: any) {
-      console.error('Error proxying to S3:', error);
+      console.error('S3 Proxy Error:', error);
+
+      const errorMessage = `S3 Error: ${error.name || 'UnknownError'} - ${error.message || 'No details'}`;
+
       return new Response(JSON.stringify({
-        message: error.message,
-        name: error.name,
-        code: error.code || error.name,
+        message: errorMessage,
+        code: error.name || "UnknownError",
       }), {
-        status: error.$metadata?.httpStatusCode ?? 500,
+        status: error.$metadata?.httpStatusCode ?? 500, // 尝试获取 S3 状态码
         headers: {'Content-Type': 'application/json'}
       });
     }
