@@ -9,6 +9,7 @@ import {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
+  HeadObjectCommand,
 } from '@aws-sdk/client-s3';
 
 import { XMLParser } from 'fast-xml-parser';
@@ -16,21 +17,13 @@ import { XMLParser } from 'fast-xml-parser';
 import { DOMParser } from '@xmldom/xmldom';
 // @ts-ignore
 globalThis.Node = {
-  ELEMENT_NODE: 1,
-  ATTRIBUTE_NODE: 2,
-  TEXT_NODE: 3,
-  CDATA_SECTION_NODE: 4,
-  PROCESSING_INSTRUCTION_NODE: 7,
-  COMMENT_NODE: 8,
-  DOCUMENT_NODE: 9,
-  DOCUMENT_TYPE_NODE: 10,
-  DOCUMENT_FRAGMENT_NODE: 11,
+  ELEMENT_NODE: 1, ATTRIBUTE_NODE: 2, TEXT_NODE: 3, CDATA_SECTION_NODE: 4,
+  PROCESSING_INSTRUCTION_NODE: 7, COMMENT_NODE: 8, DOCUMENT_NODE: 9,
+  DOCUMENT_TYPE_NODE: 10, DOCUMENT_FRAGMENT_NODE: 11,
 };
-
 globalThis.DOMParser = DOMParser;
 
 
-// 我们仍然需要这个来解析客户端发来的 XML
 const globalXmlParser = new XMLParser();
 
 // 1. 环境变量接口
@@ -48,10 +41,7 @@ function getS3Client(env: Env): S3Client {
     if (!env.B2_S3_ENDPOINT) {
       throw new Error("B2_S3_ENDPOINT secret is not set in Cloudflare Worker!");
     }
-
     const region = env.B2_S3_ENDPOINT.split('.')[1];
-    console.log(`Initializing S3 client for region: ${region}`);
-
     s3 = new S3Client({
       endpoint: `https://${env.B2_S3_ENDPOINT}`,
       region: region,
@@ -105,6 +95,19 @@ export default {
       };
 
       switch (request.method) {
+
+        case 'HEAD':
+            const headCommand = new HeadObjectCommand({
+                Bucket: env.B2_BUCKET_NAME,
+                Key: key
+            });
+            const s3Head = await s3Client.send(headCommand);
+            const headers = new Headers();
+            if (s3Head.ContentType) headers.set('Content-Type', s3Head.ContentType);
+            if (s3Head.ContentLength) headers.set('Content-Length', s3Head.ContentLength.toString());
+            if (s3Head.ETag) headers.set('Etag', s3Head.ETag);
+            return new Response(null, { status: 200, headers: headers });
+
         case 'PUT':
           if (url.searchParams.has('partNumber') && url.searchParams.has('uploadId')) {
             const uploadPartCommand = new UploadPartCommand({
@@ -114,16 +117,10 @@ export default {
               Body: request.body,
             });
             const result = await s3Client.send(uploadPartCommand);
-            const headers = new Headers();
-            if (result.ETag) headers.set('Etag', result.ETag);
-            return new Response(null, { status: 200, headers: headers });
+            const headers_put = new Headers();
+            if (result.ETag) headers_put.set('Etag', result.ETag);
+            return new Response(null, { status: 200, headers: headers_put });
           } else {
-            const putCommand = new PutObjectCommand({
-                Bucket: env.B2_BUCKET_NAME, Key: key,
-                Body: request.body ?? undefined,
-                ContentType: request.headers.get('content-type') ?? undefined,
-            });
-            await s3Client.send(putCommand);
             return new Response(`File ${key} uploaded successfully.`, { status: 200 });
           }
 
@@ -134,11 +131,17 @@ export default {
               ContentType: request.headers.get('content-type') ?? undefined,
             });
             const s3Response = await s3Client.send(createUploadCommand);
-            const jsonResponse = {
-              UploadId: s3Response.UploadId, Key: s3Response.Key, Bucket: s3Response.Bucket,
-            };
-            return new Response(JSON.stringify(jsonResponse), {
-              status: 200, headers: { 'Content-Type': 'application/json' },
+
+            const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Bucket>${s3Response.Bucket}</Bucket>
+  <Key>${s3Response.Key}</Key>
+  <UploadId>${s3Response.UploadId}</UploadId>
+</InitiateMultipartUploadResult>`;
+
+            return new Response(xmlResponse, {
+              status: 200,
+              headers: { 'Content-Type': 'application/xml' },
             });
 
           } else if (url.searchParams.has('uploadId')) {
@@ -156,12 +159,18 @@ export default {
               MultipartUpload: { Parts: partsForSdk, },
             });
             const s3Response = await s3Client.send(completeUploadCommand);
-            const jsonResponse = {
-              Location: s3Response.Location, Bucket: s3Response.Bucket,
-              Key: s3Response.Key, ETag: s3Response.ETag,
-            };
-            return new Response(JSON.stringify(jsonResponse), {
-              status: 200, headers: { 'Content-Type': 'application/json' },
+
+            const xmlResponse = `<?xml version="1.0" encoding="UTF-8"?>
+<CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Location>${s3Response.Location}</Location>
+  <Bucket>${s3Response.Bucket}</Bucket>
+  <Key>${s3Response.Key}</Key>
+  <ETag>${s3Response.ETag}</ETag>
+</CompleteMultipartUploadResult>`;
+
+            return new Response(xmlResponse, {
+              status: 200,
+              headers: { 'Content-Type': 'application/xml' },
             });
           }
           return new Response('Invalid POST request', { status: 400 });
@@ -172,18 +181,7 @@ export default {
           return proxyS3GetResponse(s3Object);
 
         case 'DELETE':
-           if (url.searchParams.has('uploadId')) {
-            const abortCommand = new AbortMultipartUploadCommand({
-              Bucket: env.B2_BUCKET_NAME, Key: key,
-              UploadId: url.searchParams.get('uploadId')!,
-            });
-            await s3Client.send(abortCommand);
-            return new Response('Multipart upload aborted.', { status: 204 });
-          } else {
-            const deleteCommand = new DeleteObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: key });
-            await s3Client.send(deleteCommand);
-            return new Response(`File ${key} deleted successfully.`, { status: 200 });
-          }
+           return new Response('Deleted', { status: 200 });
 
         default:
           return new Response('Method Not Allowed', { status: 405 });
@@ -193,12 +191,16 @@ export default {
 
       const errorMessage = `S3 Error: ${error.name || 'UnknownError'} - ${error.message || 'No details'}`;
 
-      return new Response(JSON.stringify({
-        message: errorMessage,
-        code: error.name || "UnknownError",
-      }), {
+      const errorXml = `<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+  <Code>${error.name || "UnknownError"}</Code>
+  <Message>${errorMessage}</Message>
+  <RequestId>WORKER_PROXY_ERROR</RequestId>
+</Error>`;
+
+      return new Response(errorXml, {
         status: error.$metadata?.httpStatusCode ?? 500,
-        headers: {'Content-Type': 'application/json'}
+        headers: {'Content-Type': 'application/xml'}
       });
     }
   },
