@@ -10,7 +10,7 @@ import {
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
-// (新) 导入 XML 解析器
+// 导入 XML 解析器
 import { XMLParser } from 'fast-xml-parser';
 
 // 1. 环境变量接口
@@ -21,12 +21,13 @@ export interface Env {
   B2_SECRET_APPLICATION_KEY: string;
 }
 
-// 2. S3 客户端初始化 (不变)
+// 2. S3 客户端初始化
 let s3: S3Client;
 function getS3Client(env: Env): S3Client {
   if (!s3) {
     s3 = new S3Client({
-      endpoint: `https://s3.${env.B2_S3_ENDPOINT}`, // 注意: B2 S3 API v3 SDK 推荐去掉 s3. 前缀
+      // env.B2_S3_ENDPOINT 已经包含了 "s3." (例如: s3.us-west-005.backblazeb2.com)
+      endpoint: `https://{env.B2_S3_ENDPOINT}`,
       region: 'auto',
       credentials: {
         accessKeyId: env.B2_ACCESS_KEY_ID,
@@ -37,7 +38,7 @@ function getS3Client(env: Env): S3Client {
   return s3;
 }
 
-// (新) 创建一个 XML 解析器实例
+//创建一个 XML 解析器实例
 const xmlParser = new XMLParser();
 
 // 3. Worker 主入口
@@ -50,7 +51,6 @@ export default {
     const s3Client = getS3Client(env);
     const url = new URL(request.url);
 
-    // --- 路径和 Key 解析逻辑 (不变) ---
     let path = url.pathname;
     const bucketPathPrefix = '/' + env.B2_BUCKET_NAME;
     let key: string;
@@ -69,9 +69,7 @@ export default {
     if (!key && !url.searchParams.has('uploadId')) {
       return new Response('Invalid path or key.', { status: 400 });
     }
-    // --- 路径解析结束 ---
 
-    // 辅助函数：代理 S3 响应 (不变)
     const proxyS3Response = async (s3Response: any): Promise<Response> => {
       const headers = new Headers();
       if (s3Response.ContentType) headers.set('Content-Type', s3Response.ContentType);
@@ -94,7 +92,7 @@ export default {
 
     try {
       switch (request.method) {
-        case 'PUT': // (不变)
+        case 'PUT':
           if (url.searchParams.has('partNumber') && url.searchParams.has('uploadId')) {
             // --- 2. 处理分块上传 (单个块) ---
             const uploadPartCommand = new UploadPartCommand({
@@ -122,9 +120,8 @@ export default {
             return new Response(`File ${key} uploaded successfully.`, { status: 200 });
           }
 
-        case 'POST': // (已修复)
+        case 'POST':
           if (url.searchParams.has('uploads')) {
-            // --- 1. 创建分块上传会话 ---
             const createUploadCommand = new CreateMultipartUploadCommand({
               Bucket: env.B2_BUCKET_NAME,
               Key: key,
@@ -134,7 +131,6 @@ export default {
             return proxyS3Response(s3Response);
 
           } else if (url.searchParams.has('uploadId')) {
-            // --- 3. 完成分块上传 (关键修复) ---
 
             // a. 读取客户端发来的 XML body
             const xmlBody = await request.text();
@@ -160,7 +156,6 @@ export default {
               Bucket: env.B2_BUCKET_NAME,
               Key: key,
               UploadId: url.searchParams.get('uploadId')!,
-              // *** (这就是修复) ***
               // 我们传递解析后的 JS 对象，而不是 'Body'
               MultipartUpload: {
                 Parts: partsForSdk,
@@ -172,7 +167,7 @@ export default {
           }
           return new Response('Invalid POST request', { status: 400 });
 
-        case 'GET': // (不变)
+        case 'GET':
           const getCommand = new GetObjectCommand({
             Bucket: env.B2_BUCKET_NAME,
             Key: key,
@@ -180,7 +175,7 @@ export default {
           const s3Object = await s3Client.send(getCommand);
           return proxyS3Response(s3Object);
 
-        case 'DELETE': // (不变)
+        case 'DELETE':
           if (url.searchParams.has('uploadId')) {
             const abortCommand = new AbortMultipartUploadCommand({
               Bucket: env.B2_BUCKET_NAME,
