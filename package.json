@@ -14,5 +14,10 @@
 		"typescript": "^5.5.2",
 		"vitest": "~3.2.0",
 		"wrangler": "^4.46.0"
+	},
+	"dependencies": {
+		"@aws-sdk/client-s3": "^3.927.0",
+		"aws4fetch": "^1.0.20",
+		"hono": "^4.10.4"
 	}
 }
