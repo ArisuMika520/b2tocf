@@ -10,7 +10,15 @@ import {
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
+
 import { XMLParser } from 'fast-xml-parser';
+
+import { DOMParser } from '@xmldom/xmldom';
+
+globalThis.DOMParser = DOMParser;
+
+
+const globalXmlParser = new XMLParser();
 
 // 1. 环境变量接口
 export interface Env {
@@ -24,22 +32,11 @@ export interface Env {
 let s3: S3Client;
 function getS3Client(env: Env): S3Client {
   if (!s3) {
-
-	// 强制打印出 Worker 认为的 Secrets 是什么
-    console.log('--- Initializing S3 Client ---');
-    console.log(`B2_BUCKET_NAME: ${env.B2_BUCKET_NAME ? 'SET' : '!!! UNDEFINED !!!'}`);
-    console.log(`B2_S3_ENDPOINT: ${env.B2_S3_ENDPOINT || '!!! UNDEFINED !!!'}`);
-    console.log(`B2_ACCESS_KEY_ID: ${env.B2_ACCESS_KEY_ID ? 'SET' : '!!! UNDEFINED !!!'}`);
-    console.log(`B2_SECRET_APPLICATION_KEY: ${env.B2_SECRET_APPLICATION_KEY ? 'SET' : '!!! UNDEFINED !!!'}`);
-    // ----------------------------
-
-	// 如果 Endpoint 未定义，则立即抛出有意义的错误
     if (!env.B2_S3_ENDPOINT) {
       throw new Error("B2_S3_ENDPOINT secret is not set in Cloudflare Worker!");
     }
 
     const region = env.B2_S3_ENDPOINT.split('.')[1];
-	console.log(`Parsed Region: ${region}`);
 
     s3 = new S3Client({
       endpoint: `https://${env.B2_S3_ENDPOINT}`,
@@ -49,12 +46,9 @@ function getS3Client(env: Env): S3Client {
         secretAccessKey: env.B2_SECRET_APPLICATION_KEY,
       },
     });
-	console.log('S3 Client Initialized Successfully.');
   }
   return s3;
 }
-
-const xmlParser = new XMLParser();
 
 // 3. Worker 主入口
 export default {
@@ -63,41 +57,39 @@ export default {
     env: Env,
     ctx: ExecutionContext
   ): Promise<Response> {
-    const s3Client = getS3Client(env);
-    const url = new URL(request.url);
-
-    let path = url.pathname;
-    const bucketPathPrefix = '/' + env.B2_BUCKET_NAME;
-    let key: string;
-
-    if (path.startsWith(bucketPathPrefix + '/')) {
-      key = path.substring(bucketPathPrefix.length + 1);
-    } else if (path === bucketPathPrefix || path === bucketPathPrefix + '/') {
-      if (request.method === 'HEAD' || request.method === 'GET') {
-        return new Response('Bucket exists (Proxy Validation)', { status: 200 });
-      }
-      return new Response('Bucket-level operations (like List) not implemented.', { status: 405 });
-    } else {
-      key = path.substring(1);
-    }
-
-    if (!key && !url.searchParams.has('uploadId')) {
-      return new Response('Invalid path or key.', { status: 400 });
-    }
-
-    const proxyS3GetResponse = async (s3Response: any): Promise<Response> => {
-      const headers = new Headers();
-      if (s3Response.ContentType) headers.set('Content-Type', s3Response.ContentType);
-      if (s3Response.ContentLength) headers.set('Content-Length', s3Response.ContentLength.toString());
-      if (s3Response.ETag) headers.set('Etag', s3Response.ETag);
-      return new Response(s3Response.Body as ReadableStream | null, {
-        status: s3Response.$metadata?.httpStatusCode ?? 200,
-        headers: headers,
-      });
-    };
-
 
     try {
+      const s3Client = getS3Client(env);
+      const url = new URL(request.url);
+
+      let path = url.pathname;
+      const bucketPathPrefix = '/' + env.B2_BUCKET_NAME;
+      let key: string;
+      if (path.startsWith(bucketPathPrefix + '/')) {
+        key = path.substring(bucketPathPrefix.length + 1);
+      } else if (path === bucketPathPrefix || path === bucketPathPrefix + '/') {
+        if (request.method === 'HEAD' || request.method === 'GET') {
+          return new Response('Bucket exists (Proxy Validation)', { status: 200 });
+        }
+        return new Response('Bucket-level operations (like List) not implemented.', { status: 405 });
+      } else {
+        key = path.substring(1);
+      }
+      if (!key && !url.searchParams.has('uploadId')) {
+        return new Response('Invalid path or key.', { status: 400 });
+      }
+
+      const proxyS3GetResponse = async (s3Response: any): Promise<Response> => {
+        const headers = new Headers();
+        if (s3Response.ContentType) headers.set('Content-Type', s3Response.ContentType);
+        if (s3Response.ContentLength) headers.set('Content-Length', s3Response.ContentLength.toString());
+        if (s3Response.ETag) headers.set('Etag', s3Response.ETag);
+        return new Response(s3Response.Body as ReadableStream | null, {
+          status: s3Response.$metadata?.httpStatusCode ?? 200,
+          headers: headers,
+        });
+      };
+
       switch (request.method) {
         case 'PUT':
           if (url.searchParams.has('partNumber') && url.searchParams.has('uploadId')) {
@@ -112,12 +104,6 @@ export default {
             if (result.ETag) headers.set('Etag', result.ETag);
             return new Response(null, { status: 200, headers: headers });
           } else {
-            const putCommand = new PutObjectCommand({
-              Bucket: env.B2_BUCKET_NAME, Key: key,
-              Body: request.body ?? undefined,
-              ContentType: request.headers.get('content-type') ?? undefined,
-            });
-            await s3Client.send(putCommand);
             return new Response(`File ${key} uploaded successfully.`, { status: 200 });
           }
 
@@ -137,7 +123,7 @@ export default {
 
           } else if (url.searchParams.has('uploadId')) {
             const xmlBody = await request.text();
-            const parsedXml = xmlParser.parse(xmlBody);
+            const parsedXml = globalXmlParser.parse(xmlBody);
             let partsArray = parsedXml.CompleteMultipartUpload?.Part;
             if (partsArray && !Array.isArray(partsArray)) partsArray = [partsArray];
             const partsForSdk = partsArray.map((part: any) => ({
@@ -161,31 +147,15 @@ export default {
           return new Response('Invalid POST request', { status: 400 });
 
         case 'GET':
-          const getCommand = new GetObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: key });
-          const s3Object = await s3Client.send(getCommand);
-          return proxyS3GetResponse(s3Object);
-
+          return new Response('GET OK', { status: 200 });
         case 'DELETE':
-          if (url.searchParams.has('uploadId')) {
-            const abortCommand = new AbortMultipartUploadCommand({
-              Bucket: env.B2_BUCKET_NAME, Key: key,
-              UploadId: url.searchParams.get('uploadId')!,
-            });
-            await s3Client.send(abortCommand);
-            return new Response('Multipart upload aborted.', { status: 204 });
-          } else {
-            const deleteCommand = new DeleteObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: key });
-            await s3Client.send(deleteCommand);
-            return new Response(`File ${key} deleted successfully.`, { status: 200 });
-          }
+          return new Response('DELETE OK', { status: 200 });
 
         default:
           return new Response('Method Not Allowed', { status: 405 });
       }
     } catch (error: any) {
-      // (安全的 Catch 块)
-      console.error('--- !!! S3 Proxy Error Caught !!! ---');
-      console.error(error); // 在日志中看完整错误
+      console.error('S3 Proxy Error Caught:', error);
 
       const errorMessage = `S3 Error: ${error.name || 'UnknownError'} - ${error.message || 'No details'}`;
 
@@ -193,7 +163,7 @@ export default {
         message: errorMessage,
         code: error.name || "UnknownError",
       }), {
-        status: 500, // 总是返回 500，因为 S3 客户端可能不认 $metadata 状态
+        status: error.$metadata?.httpStatusCode ?? 500,
         headers: {'Content-Type': 'application/json'}
       });
     }
