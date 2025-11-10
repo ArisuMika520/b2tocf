@@ -10,7 +10,28 @@ import {
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
+
 import { XMLParser } from 'fast-xml-parser';
+
+import { DOMParser } from '@xmldom/xmldom';
+// @ts-ignore
+globalThis.Node = {
+  ELEMENT_NODE: 1,
+  ATTRIBUTE_NODE: 2,
+  TEXT_NODE: 3,
+  CDATA_SECTION_NODE: 4,
+  PROCESSING_INSTRUCTION_NODE: 7,
+  COMMENT_NODE: 8,
+  DOCUMENT_NODE: 9,
+  DOCUMENT_TYPE_NODE: 10,
+  DOCUMENT_FRAGMENT_NODE: 11,
+};
+
+globalThis.DOMParser = DOMParser;
+
+
+// 我们仍然需要这个来解析客户端发来的 XML
+const globalXmlParser = new XMLParser();
 
 // 1. 环境变量接口
 export interface Env {
@@ -24,35 +45,24 @@ export interface Env {
 let s3: S3Client;
 function getS3Client(env: Env): S3Client {
   if (!s3) {
-    // 强制打印出 Worker 认为的 Secrets 是什么
-    console.log('--- Initializing S3 Client ---');
-    console.log(`B2_BUCKET_NAME: ${env.B2_BUCKET_NAME ? 'SET' : '!!! UNDEFINED !!!'}`);
-    console.log(`B2_S3_ENDPOINT: ${env.B2_S3_ENDPOINT || '!!! UNDEFINED !!!'}`);
-    console.log(`B2_ACCESS_KEY_ID: ${env.B2_ACCESS_KEY_ID ? 'SET' : '!!! UNDEFINED !!!'}`);
-    console.log(`B2_SECRET_APPLICATION_KEY: ${env.B2_SECRET_APPLICATION_KEY ? 'SET' : '!!! UNDEFINED !!!'}`);
-    // ----------------------------
-
     if (!env.B2_S3_ENDPOINT) {
       throw new Error("B2_S3_ENDPOINT secret is not set in Cloudflare Worker!");
     }
 
     const region = env.B2_S3_ENDPOINT.split('.')[1];
-    console.log(`Parsed Region: ${region}`);
+    console.log(`Initializing S3 client for region: ${region}`);
 
     s3 = new S3Client({
       endpoint: `https://${env.B2_S3_ENDPOINT}`,
-      region: region, // 使用解析出的显式区域
+      region: region,
       credentials: {
         accessKeyId: env.B2_ACCESS_KEY_ID,
         secretAccessKey: env.B2_SECRET_APPLICATION_KEY,
       },
     });
-    console.log('S3 Client Initialized Successfully.');
   }
   return s3;
 }
-
-const xmlParser = new XMLParser();
 
 // 3. Worker 主入口
 export default {
@@ -69,7 +79,6 @@ export default {
       let path = url.pathname;
       const bucketPathPrefix = '/' + env.B2_BUCKET_NAME;
       let key: string;
-
       if (path.startsWith(bucketPathPrefix + '/')) {
         key = path.substring(bucketPathPrefix.length + 1);
       } else if (path === bucketPathPrefix || path === bucketPathPrefix + '/') {
@@ -80,7 +89,6 @@ export default {
       } else {
         key = path.substring(1);
       }
-
       if (!key && !url.searchParams.has('uploadId')) {
         return new Response('Invalid path or key.', { status: 400 });
       }
@@ -95,8 +103,6 @@ export default {
           headers: headers,
         });
       };
-
-      console.log(`Handling request: ${request.method} ${url.pathname}${url.search}`);
 
       switch (request.method) {
         case 'PUT':
@@ -113,9 +119,9 @@ export default {
             return new Response(null, { status: 200, headers: headers });
           } else {
             const putCommand = new PutObjectCommand({
-              Bucket: env.B2_BUCKET_NAME, Key: key,
-              Body: request.body ?? undefined,
-              ContentType: request.headers.get('content-type') ?? undefined,
+                Bucket: env.B2_BUCKET_NAME, Key: key,
+                Body: request.body ?? undefined,
+                ContentType: request.headers.get('content-type') ?? undefined,
             });
             await s3Client.send(putCommand);
             return new Response(`File ${key} uploaded successfully.`, { status: 200 });
@@ -123,13 +129,11 @@ export default {
 
         case 'POST':
           if (url.searchParams.has('uploads')) {
-            console.log('Attempting to create multipart upload...');
             const createUploadCommand = new CreateMultipartUploadCommand({
               Bucket: env.B2_BUCKET_NAME, Key: key,
               ContentType: request.headers.get('content-type') ?? undefined,
             });
             const s3Response = await s3Client.send(createUploadCommand);
-            console.log('Create multipart upload successful.');
             const jsonResponse = {
               UploadId: s3Response.UploadId, Key: s3Response.Key, Bucket: s3Response.Bucket,
             };
@@ -139,7 +143,7 @@ export default {
 
           } else if (url.searchParams.has('uploadId')) {
             const xmlBody = await request.text();
-            const parsedXml = xmlParser.parse(xmlBody);
+            const parsedXml = globalXmlParser.parse(xmlBody);
             let partsArray = parsedXml.CompleteMultipartUpload?.Part;
             if (partsArray && !Array.isArray(partsArray)) partsArray = [partsArray];
             const partsForSdk = partsArray.map((part: any) => ({
@@ -166,6 +170,7 @@ export default {
           const getCommand = new GetObjectCommand({ Bucket: env.B2_BUCKET_NAME, Key: key });
           const s3Object = await s3Client.send(getCommand);
           return proxyS3GetResponse(s3Object);
+
         case 'DELETE':
            if (url.searchParams.has('uploadId')) {
             const abortCommand = new AbortMultipartUploadCommand({
@@ -183,17 +188,16 @@ export default {
         default:
           return new Response('Method Not Allowed', { status: 405 });
       }
-
     } catch (error: any) {
-      console.error('--- !!! S3 Proxy Error Caught !!! ---');
-      console.error(error);
+      console.error('S3 Proxy Error Caught:', error);
+
       const errorMessage = `S3 Error: ${error.name || 'UnknownError'} - ${error.message || 'No details'}`;
 
       return new Response(JSON.stringify({
         message: errorMessage,
         code: error.name || "UnknownError",
       }), {
-        status: 500,
+        status: error.$metadata?.httpStatusCode ?? 500,
         headers: {'Content-Type': 'application/json'}
       });
     }
