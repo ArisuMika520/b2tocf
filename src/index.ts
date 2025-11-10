@@ -10,7 +10,7 @@ import {
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
-// 导入 XML 解析器
+//导入 XML 解析器
 import { XMLParser } from 'fast-xml-parser';
 
 // 1. 环境变量接口
@@ -28,7 +28,7 @@ function getS3Client(env: Env): S3Client {
     const region = env.B2_S3_ENDPOINT.split('.')[1];
     s3 = new S3Client({
       endpoint: `https://${env.B2_S3_ENDPOINT}`,
-      region: region,
+      region: region, // 使用解析出的显式区域
       credentials: {
         accessKeyId: env.B2_ACCESS_KEY_ID,
         secretAccessKey: env.B2_SECRET_APPLICATION_KEY,
@@ -38,7 +38,7 @@ function getS3Client(env: Env): S3Client {
   return s3;
 }
 
-//创建一个 XML 解析器实例
+// 创建一个 XML 解析器实例 (用于解析客户端发来的 XML)
 const xmlParser = new XMLParser();
 
 // 3. Worker 主入口
@@ -70,19 +70,13 @@ export default {
       return new Response('Invalid path or key.', { status: 400 });
     }
 
-    const proxyS3Response = async (s3Response: any): Promise<Response> => {
+    const proxyS3GetResponse = async (s3Response: any): Promise<Response> => {
       const headers = new Headers();
       if (s3Response.ContentType) headers.set('Content-Type', s3Response.ContentType);
       if (s3Response.ContentLength) headers.set('Content-Length', s3Response.ContentLength.toString());
       if (s3Response.ETag) headers.set('Etag', s3Response.ETag);
 
-      if (s3Response.$metadata?.headers) {
-          for (const [key, value] of Object.entries(s3Response.$metadata.headers)) {
-              if (key.startsWith('x-amz-')) {
-                  headers.set(key, value as string);
-              }
-          }
-      }
+
       return new Response(s3Response.Body as ReadableStream | null, {
         status: s3Response.$metadata?.httpStatusCode ?? 200,
         headers: headers,
@@ -94,7 +88,6 @@ export default {
       switch (request.method) {
         case 'PUT':
           if (url.searchParams.has('partNumber') && url.searchParams.has('uploadId')) {
-            // --- 2. 处理分块上传 (单个块) ---
             const uploadPartCommand = new UploadPartCommand({
               Bucket: env.B2_BUCKET_NAME,
               Key: key,
@@ -109,7 +102,6 @@ export default {
             return new Response(null, { status: 200, headers: headers });
 
           } else {
-            // --- 处理简单上传 ---
             const putCommand = new PutObjectCommand({
               Bucket: env.B2_BUCKET_NAME,
               Key: key,
@@ -128,42 +120,52 @@ export default {
               ContentType: request.headers.get('content-type') ?? undefined,
             });
             const s3Response = await s3Client.send(createUploadCommand);
-            return proxyS3Response(s3Response);
+
+            const jsonResponse = {
+              UploadId: s3Response.UploadId,
+              Key: s3Response.Key,
+              Bucket: s3Response.Bucket,
+            };
+
+            return new Response(JSON.stringify(jsonResponse), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
 
           } else if (url.searchParams.has('uploadId')) {
 
-            // a. 读取客户端发来的 XML body
             const xmlBody = await request.text();
-
-            // b. 解析 XML
             const parsedXml = xmlParser.parse(xmlBody);
-
-            // c. 转换成 S3 SDK v3 需要的格式
-            // S3 客户端发送的 <Part> 可能是一个对象（如果只有1块）或一个数组
             let partsArray = parsedXml.CompleteMultipartUpload?.Part;
             if (partsArray && !Array.isArray(partsArray)) {
-              // 如果只有一块，强行转成数组
               partsArray = [partsArray];
             }
-
             const partsForSdk = partsArray.map((part: any) => ({
               ETag: part.ETag,
               PartNumber: part.PartNumber,
             }));
 
-            // d. 创建 *正确* 的命令
             const completeUploadCommand = new CompleteMultipartUploadCommand({
               Bucket: env.B2_BUCKET_NAME,
               Key: key,
               UploadId: url.searchParams.get('uploadId')!,
-              // 我们传递解析后的 JS 对象，而不是 'Body'
               MultipartUpload: {
                 Parts: partsForSdk,
               },
             });
-
             const s3Response = await s3Client.send(completeUploadCommand);
-            return proxyS3Response(s3Response);
+
+            const jsonResponse = {
+              Location: s3Response.Location,
+              Bucket: s3Response.Bucket,
+              Key: s3Response.Key,
+              ETag: s3Response.ETag,
+            };
+
+            return new Response(JSON.stringify(jsonResponse), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
           }
           return new Response('Invalid POST request', { status: 400 });
 
@@ -173,7 +175,7 @@ export default {
             Key: key,
           });
           const s3Object = await s3Client.send(getCommand);
-          return proxyS3Response(s3Object);
+          return proxyS3GetResponse(s3Object);
 
         case 'DELETE':
           if (url.searchParams.has('uploadId')) {
@@ -198,13 +200,14 @@ export default {
       }
     } catch (error: any) {
       console.error('Error proxying to S3:', error);
-      if (error.$metadata) {
-        return new Response(error.message, {
-          status: error.$metadata.httpStatusCode ?? 500,
-          headers: {'Content-Type': 'application/xml'}
-        });
-      }
-      return new Response('Internal Server Error: ' + error.message, { status: 500 });
+      return new Response(JSON.stringify({
+        message: error.message,
+        name: error.name,
+        code: error.code || error.name,
+      }), {
+        status: error.$metadata?.httpStatusCode ?? 500,
+        headers: {'Content-Type': 'application/json'}
+      });
     }
   },
 };
