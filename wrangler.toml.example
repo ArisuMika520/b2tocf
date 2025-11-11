@@ -1,0 +1,19 @@
+# Cloudflare Worker Configuration Example
+# Rename this file to wrangler.toml and fill in your details.
+
+name = "b2-download-worker" # Your Worker's name
+main = "src/index.ts"
+compatibility_date = "2023-10-30"
+
+[vars]
+# These are NOT secrets and are safe to commit.
+# B2_BUCKET_NAME = "your-b2-bucket-name"
+# B2_S3_ENDPOINT = "s3.us-west-004.backblazeb2.com"
+
+# To set secrets, use the command line:
+# wrangler secret put B2_BUCKET_NAME
+# wrangler secret put B2_S3_ENDPOINT
+# wrangler secret put B2_ACCESS_KEY_ID
+# wrangler secret put B2_SECRET_APPLICATION_KEY
+# wrangler secret put URL_SECRET_KEY
+
