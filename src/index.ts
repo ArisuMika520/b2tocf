@@ -72,7 +72,17 @@ export default {
       const s3Client = getS3Client(env);
       const url = new URL(request.url);
 
-      const key = url.pathname.substring(1);
+
+      const path = url.pathname.substring(1);
+
+      const bucketPrefix = env.B2_BUCKET_NAME + '/';
+
+      let key: string;
+      if (path.startsWith(bucketPrefix)) {
+        key = path.substring(bucketPrefix.length);
+      } else {
+        key = path;
+      }
 
       if (!key) {
         return new Response('Invalid path.', { status: 400, headers: corsHeaders });
@@ -85,7 +95,6 @@ export default {
       const s3Object = await s3Client.send(getCommand);
 
       const headers = new Headers(corsHeaders);
-
       if (s3Object.ContentType) headers.set('Content-Type', s3Object.ContentType);
       if (s3Object.ContentLength) headers.set('Content-Length', s3Object.ContentLength.toString());
       if (s3Object.ETag) headers.set('Etag', s3Object.ETag);
