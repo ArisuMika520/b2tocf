@@ -3,8 +3,8 @@
 import {
   S3Client,
   GetObjectCommand,
-  GetObjectCommandInput, // Import GetObjectCommandInput
 } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 import { DOMParser } from '@xmldom/xmldom';
 // @ts-ignore
@@ -86,36 +86,49 @@ export default {
         console.log('Key decode failed, using original key:', key);
       }
 
-      const range = request.headers.get('range');
-
-      const getCommandInput: GetObjectCommandInput = {
+      // 生成预签名 URL
+      const filename = key.split('/').pop() || 'download';
+      const getCommand = new GetObjectCommand({
         Bucket: env.B2_BUCKET_NAME,
         Key: key,
-      };
+        ResponseContentDisposition: `attachment; filename="${encodeURIComponent(filename)}"`,
+      });
 
+      const signedUrl = await getSignedUrl(s3Client, getCommand, {
+        expiresIn: 3600,
+      });
+
+      const range = request.headers.get('range');
+
+      const fetchHeaders: HeadersInit = {};
       if (range) {
-        getCommandInput.Range = range;
+        fetchHeaders['Range'] = range;
       }
 
-      const getCommand = new GetObjectCommand(getCommandInput);
-      const s3Object = await s3Client.send(getCommand);
+      // 使用 Cloudflare 的 fetch 代理到 B2
+      const b2Response = await fetch(signedUrl, {
+        method: request.method,
+        headers: fetchHeaders,
+      });
 
       const headers = new Headers(corsHeaders);
       headers.set('Cache-Control', 'public, max-age=14400');
       headers.set('Accept-Ranges', 'bytes');
-
-      const filename = key.split('/').pop() || 'download';
       headers.set('Content-Disposition', `attachment; filename="${filename}"`);
 
-      if (s3Object.ContentType) headers.set('Content-Type', s3Object.ContentType);
-      if (s3Object.ContentLength) headers.set('Content-Length', s3Object.ContentLength.toString());
-      if (s3Object.ETag) headers.set('Etag', s3Object.ETag);
-      if (s3Object.ContentRange) headers.set('Content-Range', s3Object.ContentRange);
+      const contentType = b2Response.headers.get('content-type');
+      const contentLength = b2Response.headers.get('content-length');
+      const contentRange = b2Response.headers.get('content-range');
+      const etag = b2Response.headers.get('etag');
 
-      const status = s3Object.ContentRange ? 206 : (s3Object.$metadata?.httpStatusCode ?? 200);
+      if (contentType) headers.set('Content-Type', contentType);
+      if (contentLength) headers.set('Content-Length', contentLength);
+      if (contentRange) headers.set('Content-Range', contentRange);
+      if (etag) headers.set('Etag', etag);
 
-      return new Response(s3Object.Body as ReadableStream | null, {
-        status: status,
+      // 返回响应，body 直接传递（Cloudflare 会优化处理）
+      return new Response(b2Response.body, {
+        status: b2Response.status,
         headers: headers,
       });
 
