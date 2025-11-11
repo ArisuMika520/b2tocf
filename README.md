@@ -240,9 +240,9 @@ A:
 2. 确认 B2 Bucket 权限设置
 3. 查看 Worker 日志：`wrangler tail`
 
-## 许可证
+## 开源声明 / 开源协议
 
-MIT License
+本项目遵从 `MIT` 开源协议, 玩的开心！
 
 ## 贡献
 
