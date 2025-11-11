@@ -84,12 +84,8 @@ export default {
           path = path.substring(0, queryIndex);
       }
 
-      const pathWithoutSlash = path.substring(1);
+      const key = path.substring(1);
 
-      const bucketPrefix = env.B2_BUCKET_NAME + '/';
-      let key = bucketPrefix + pathWithoutSlash;
-
-      key = decodeURIComponent(key);
 
 
       if (!key) {
