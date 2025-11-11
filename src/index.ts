@@ -23,6 +23,7 @@ export interface Env {
   B2_S3_ENDPOINT: string;
   B2_ACCESS_KEY_ID: string;
   B2_SECRET_APPLICATION_KEY: string;
+  URL_SECRET_KEY: string;
 }
 
 // 2. S3 客户端初始化
@@ -45,7 +46,24 @@ function getS3Client(env: Env): S3Client {
   return s3;
 }
 
-// 3. Worker 主入口
+// 3. 生成 1 小时有效的 token
+async function generateHourlyToken(key: string, secret: string): Promise<string> {
+  const encoder = new TextEncoder();
+  // 精确到小时，token 1 小时内有效
+  const hourTimestamp = Math.floor(Date.now() / 3600000).toString();
+  const data = encoder.encode(key + secret + hourTimestamp);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+}
+
+// 4. 验证 token
+async function verifyToken(key: string, token: string, secret: string): Promise<boolean> {
+  const currentToken = await generateHourlyToken(key, secret);
+  return token === currentToken;
+}
+
+// 5. Worker 主入口
 export default {
   async fetch(
     request: Request,
@@ -65,7 +83,7 @@ export default {
       }
 
       if (request.method !== 'GET' && request.method !== 'HEAD') {
-        return new Response('Method Not Allowed. This endpoint is for downloads only.', {
+        return new Response('Method Not Allowed', {
           status: 405,
           headers: corsHeaders
         });
@@ -77,7 +95,7 @@ export default {
       let key = url.pathname.substring(1);
 
       if (!key) {
-        return new Response('Invalid path.', { status: 400, headers: corsHeaders });
+        return new Response('Invalid path', { status: 400, headers: corsHeaders });
       }
 
       try {
@@ -86,51 +104,46 @@ export default {
         console.log('Key decode failed, using original key:', key);
       }
 
-      // 生成预签名 URL
+      // 自动生成 token
+      const autoToken = await generateHourlyToken(key, env.URL_SECRET_KEY);
+
+      // 检查 URL 参数
+      const mode = url.searchParams.get('mode') || 'proxy'; // proxy | cache
+      const userToken = url.searchParams.get('token');
       const filename = key.split('/').pop() || 'download';
-      const getCommand = new GetObjectCommand({
-        Bucket: env.B2_BUCKET_NAME,
-        Key: key,
-        ResponseContentDisposition: `attachment; filename="${encodeURIComponent(filename)}"`,
-      });
 
-      const signedUrl = await getSignedUrl(s3Client, getCommand, {
-        expiresIn: 3600,
-      });
-
-      const range = request.headers.get('range');
-
-      const fetchHeaders: HeadersInit = {};
-      if (range) {
-        fetchHeaders['Range'] = range;
+      // 验证 token
+      if (userToken && userToken !== autoToken) {
+        return new Response('Invalid or expired token', {
+          status: 403,
+          headers: corsHeaders
+        });
       }
 
-      // 使用 Cloudflare 的 fetch 代理到 B2
-      const b2Response = await fetch(signedUrl, {
-        method: request.method,
-        headers: fetchHeaders,
-      });
+      // 缓存模式
+      if (mode === 'cache') {
+        return await handleCachedProxy(
+          s3Client,
+          env,
+          key,
+          filename,
+          request,
+          corsHeaders,
+          ctx,
+          autoToken
+        );
+      }
 
-      const headers = new Headers(corsHeaders);
-      headers.set('Cache-Control', 'public, max-age=14400');
-      headers.set('Accept-Ranges', 'bytes');
-      headers.set('Content-Disposition', `attachment; filename="${filename}"`);
-
-      const contentType = b2Response.headers.get('content-type');
-      const contentLength = b2Response.headers.get('content-length');
-      const contentRange = b2Response.headers.get('content-range');
-      const etag = b2Response.headers.get('etag');
-
-      if (contentType) headers.set('Content-Type', contentType);
-      if (contentLength) headers.set('Content-Length', contentLength);
-      if (contentRange) headers.set('Content-Range', contentRange);
-      if (etag) headers.set('Etag', etag);
-
-      // 返回响应，body 直接传递（Cloudflare 会优化处理）
-      return new Response(b2Response.body, {
-        status: b2Response.status,
-        headers: headers,
-      });
+      // 直接代理
+      return await handleDirectProxy(
+        s3Client,
+        env,
+        key,
+        filename,
+        request,
+        corsHeaders,
+        autoToken
+      );
 
     } catch (error: any) {
       console.error('S3 Download-Proxy Error:', error);
@@ -149,3 +162,144 @@ export default {
     }
   },
 };
+
+// 缓存代理模式
+async function handleCachedProxy(
+  s3Client: S3Client,
+  env: Env,
+  key: string,
+  filename: string,
+  request: Request,
+  corsHeaders: Record<string, string>,
+  ctx: ExecutionContext,
+  token: string
+): Promise<Response> {
+  const cacheUrl = new URL(request.url);
+  cacheUrl.searchParams.delete('token');
+  const cacheKey = new Request(cacheUrl.toString(), request);
+  const cache = (caches as any).default;
+
+  let response = await cache.match(cacheKey);
+
+  if (!response) {
+    const getCommand = new GetObjectCommand({
+      Bucket: env.B2_BUCKET_NAME,
+      Key: key,
+      ResponseContentDisposition: `attachment; filename="${encodeURIComponent(filename)}"`,
+    });
+
+    const signedUrl = await getSignedUrl(s3Client, getCommand, {
+      expiresIn: 3600,
+    });
+
+    const range = request.headers.get('range');
+    const fetchHeaders: HeadersInit = {};
+    if (range) {
+      fetchHeaders['Range'] = range;
+    }
+
+    const b2Response = await fetch(signedUrl, {
+      method: request.method,
+      headers: fetchHeaders,
+      cf: {
+        cacheTtl: 86400,
+        cacheEverything: true,
+      },
+    });
+
+    const headers = new Headers(corsHeaders);
+    headers.set('Cache-Control', 'public, max-age=86400');
+    headers.set('Accept-Ranges', 'bytes');
+    headers.set('Content-Disposition', `attachment; filename="${filename}"`);
+    headers.set('X-Cache-Status', 'MISS');
+    headers.set('X-Token', token);
+
+    const contentType = b2Response.headers.get('content-type');
+    const contentLength = b2Response.headers.get('content-length');
+    const contentRange = b2Response.headers.get('content-range');
+    const etag = b2Response.headers.get('etag');
+
+    if (contentType) headers.set('Content-Type', contentType);
+    if (contentLength) headers.set('Content-Length', contentLength);
+    if (contentRange) headers.set('Content-Range', contentRange);
+    if (etag) headers.set('Etag', etag);
+
+    response = new Response(b2Response.body, {
+      status: b2Response.status,
+      headers: headers,
+    });
+
+    if (b2Response.status === 200 && !range) {
+      ctx.waitUntil(cache.put(cacheKey, response.clone()));
+    }
+  } else {
+    const headers = new Headers(response.headers);
+    headers.set('X-Cache-Status', 'HIT');
+    headers.set('X-Token', token);
+    response = new Response(response.body, {
+      status: response.status,
+      headers: headers,
+    });
+  }
+
+  return response;
+}
+
+// 直接代理
+async function handleDirectProxy(
+  s3Client: S3Client,
+  env: Env,
+  key: string,
+  filename: string,
+  request: Request,
+  corsHeaders: Record<string, string>,
+  token: string
+): Promise<Response> {
+  const getCommand = new GetObjectCommand({
+    Bucket: env.B2_BUCKET_NAME,
+    Key: key,
+    ResponseContentDisposition: `attachment; filename="${encodeURIComponent(filename)}"`,
+  });
+
+  const signedUrl = await getSignedUrl(s3Client, getCommand, {
+    expiresIn: 3600,
+  });
+
+  const range = request.headers.get('range');
+  const fetchHeaders: HeadersInit = {};
+  if (range) {
+    fetchHeaders['Range'] = range;
+  }
+
+  const b2Response = await fetch(signedUrl, {
+    method: request.method,
+    headers: fetchHeaders,
+    cf: {
+      cacheTtl: 14400,
+      cacheEverything: true,
+    },
+  });
+
+  const headers = new Headers(corsHeaders);
+  headers.set('Cache-Control', 'public, max-age=14400');
+  headers.set('Accept-Ranges', 'bytes');
+  headers.set('Content-Disposition', `attachment; filename="${filename}"`);
+  headers.set('X-Token', token);
+
+  const contentType = b2Response.headers.get('content-type');
+  const contentLength = b2Response.headers.get('content-length');
+  const contentRange = b2Response.headers.get('content-range');
+  const etag = b2Response.headers.get('etag');
+  const cfCacheStatus = b2Response.headers.get('cf-cache-status');
+
+  if (contentType) headers.set('Content-Type', contentType);
+  if (contentLength) headers.set('Content-Length', contentLength);
+  if (contentRange) headers.set('Content-Range', contentRange);
+  if (etag) headers.set('Etag', etag);
+  if (cfCacheStatus) headers.set('CF-Cache-Status', cfCacheStatus);
+
+  return new Response(b2Response.body, {
+    status: b2Response.status,
+    headers: headers,
+  });
+}
