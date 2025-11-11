@@ -3,6 +3,7 @@
 import {
   S3Client,
   GetObjectCommand,
+  GetObjectCommandInput, // Import GetObjectCommandInput
 } from '@aws-sdk/client-s3';
 
 import { DOMParser } from '@xmldom/xmldom';
@@ -56,7 +57,6 @@ export default {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
       'Access-Control-Allow-Headers': '*',
-      'Content-Type': 'text/plain',
     };
 
     try {
@@ -74,42 +74,48 @@ export default {
       const s3Client = getS3Client(env);
       const url = new URL(request.url);
 
-      // 获取路径并正确解码
-      // url.pathname 已经自动解码了 %20 等编码,但我们需要确保正确处理
       let key = url.pathname.substring(1);
 
       if (!key) {
         return new Response('Invalid path.', { status: 400, headers: corsHeaders });
       }
 
-      // 再次解码以处理双重编码的情况
       try {
         key = decodeURIComponent(key);
       } catch (e) {
-        // 如果解码失败,使用原始 key
         console.log('Key decode failed, using original key:', key);
       }
 
-      const getCommand = new GetObjectCommand({
+      const range = request.headers.get('range');
+
+      const getCommandInput: GetObjectCommandInput = {
         Bucket: env.B2_BUCKET_NAME,
-        Key: key
-      });
+        Key: key,
+      };
+
+      if (range) {
+        getCommandInput.Range = range;
+      }
+
+      const getCommand = new GetObjectCommand(getCommandInput);
       const s3Object = await s3Client.send(getCommand);
 
       const headers = new Headers(corsHeaders);
       headers.set('Cache-Control', 'public, max-age=14400');
+      headers.set('Accept-Ranges', 'bytes');
 
-      // 从 key 中提取文件名
       const filename = key.split('/').pop() || 'download';
-      // 设置 Content-Disposition 响应头
       headers.set('Content-Disposition', `attachment; filename="${filename}"`);
 
       if (s3Object.ContentType) headers.set('Content-Type', s3Object.ContentType);
       if (s3Object.ContentLength) headers.set('Content-Length', s3Object.ContentLength.toString());
       if (s3Object.ETag) headers.set('Etag', s3Object.ETag);
+      if (s3Object.ContentRange) headers.set('Content-Range', s3Object.ContentRange);
+
+      const status = s3Object.ContentRange ? 206 : (s3Object.$metadata?.httpStatusCode ?? 200);
 
       return new Response(s3Object.Body as ReadableStream | null, {
-        status: s3Object.$metadata?.httpStatusCode ?? 200,
+        status: status,
         headers: headers,
       });
 
