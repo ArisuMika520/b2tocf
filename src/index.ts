@@ -87,13 +87,10 @@ export default {
       const pathWithoutSlash = path.substring(1);
 
       const bucketPrefix = env.B2_BUCKET_NAME + '/';
+      let key = bucketPrefix + pathWithoutSlash;
 
-      let key: string;
-      if (pathWithoutSlash.startsWith(bucketPrefix)) {
-        key = pathWithoutSlash.substring(bucketPrefix.length);
-      } else {
-        key = pathWithoutSlash;
-      }
+      key = decodeURIComponent(key);
+
 
       if (!key) {
         return new Response('Invalid path.', { status: 400, headers: corsHeaders });
