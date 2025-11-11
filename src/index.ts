@@ -44,6 +44,7 @@ function getS3Client(env: Env): S3Client {
   return s3;
 }
 
+// 3. Worker 主入口
 export default {
   async fetch(
     request: Request,
@@ -55,6 +56,7 @@ export default {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
       'Access-Control-Allow-Headers': '*',
+      'Content-Type': 'text/plain',
     };
 
     try {
@@ -73,15 +75,24 @@ export default {
       const url = new URL(request.url);
 
 
-      const path = url.pathname.substring(1);
+      const rawUrl = request.url;
+      const pathStartIndex = rawUrl.indexOf(url.hostname) + url.hostname.length;
+      let path = rawUrl.substring(pathStartIndex);
+
+      const queryIndex = path.indexOf('?');
+      if (queryIndex !== -1) {
+          path = path.substring(0, queryIndex);
+      }
+
+      const pathWithoutSlash = path.substring(1);
 
       const bucketPrefix = env.B2_BUCKET_NAME + '/';
 
       let key: string;
-      if (path.startsWith(bucketPrefix)) {
-        key = path.substring(bucketPrefix.length);
+      if (pathWithoutSlash.startsWith(bucketPrefix)) {
+        key = pathWithoutSlash.substring(bucketPrefix.length);
       } else {
-        key = path;
+        key = pathWithoutSlash;
       }
 
       if (!key) {
@@ -95,6 +106,8 @@ export default {
       const s3Object = await s3Client.send(getCommand);
 
       const headers = new Headers(corsHeaders);
+      headers.set('Cache-Control', 'public, max-age=14400');
+
       if (s3Object.ContentType) headers.set('Content-Type', s3Object.ContentType);
       if (s3Object.ContentLength) headers.set('Content-Length', s3Object.ContentLength.toString());
       if (s3Object.ETag) headers.set('Etag', s3Object.ETag);
@@ -116,7 +129,7 @@ export default {
 
       return new Response(`S3 Error: ${error.name || 'UnknownError'}`, {
         status: error.$metadata?.httpStatusCode ?? 500,
-        headers: { ...corsHeaders, 'Content-Type': 'text/plain' }
+        headers: corsHeaders
       });
     }
   },
