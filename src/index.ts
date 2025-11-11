@@ -74,10 +74,20 @@ export default {
       const s3Client = getS3Client(env);
       const url = new URL(request.url);
 
-      const key = url.pathname.substring(1);
+      // 获取路径并正确解码
+      // url.pathname 已经自动解码了 %20 等编码,但我们需要确保正确处理
+      let key = url.pathname.substring(1);
 
       if (!key) {
         return new Response('Invalid path.', { status: 400, headers: corsHeaders });
+      }
+
+      // 再次解码以处理双重编码的情况
+      try {
+        key = decodeURIComponent(key);
+      } catch (e) {
+        // 如果解码失败,使用原始 key
+        console.log('Key decode failed, using original key:', key);
       }
 
       const getCommand = new GetObjectCommand({
