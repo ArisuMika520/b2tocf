@@ -17,7 +17,6 @@
 	},
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.927.0",
-		"@aws-sdk/s3-request-presigner": "^3.928.0",
 		"@xmldom/xmldom": "^0.8.11",
 		"aws4fetch": "^1.0.20",
 		"fast-xml-parser": "^5.3.1",
