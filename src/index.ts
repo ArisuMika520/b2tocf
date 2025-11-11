@@ -99,6 +99,11 @@ export default {
       const headers = new Headers(corsHeaders);
       headers.set('Cache-Control', 'public, max-age=14400');
 
+      // 从 key 中提取文件名
+      const filename = key.split('/').pop() || 'download';
+      // 设置 Content-Disposition 响应头
+      headers.set('Content-Disposition', `attachment; filename="${filename}"`);
+
       if (s3Object.ContentType) headers.set('Content-Type', s3Object.ContentType);
       if (s3Object.ContentLength) headers.set('Content-Length', s3Object.ContentLength.toString());
       if (s3Object.ETag) headers.set('Etag', s3Object.ETag);
