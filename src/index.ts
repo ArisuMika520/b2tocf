@@ -74,8 +74,7 @@ export default {
       const s3Client = getS3Client(env);
       const url = new URL(request.url);
 
-      const decodedPath = url.pathname.substring(1);
-      const key = decodedPath.replace(/ /g, '+');
+      const key = url.pathname.substring(1);
 
       if (!key) {
         return new Response('Invalid path.', { status: 400, headers: corsHeaders });
