@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "b2tocf",
+	"name": "b2tocf-imagehost",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-11-09",
 	"observability": {
