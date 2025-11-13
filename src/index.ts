@@ -49,7 +49,6 @@ function getS3Client(env: Env): S3Client {
 // 3. 生成 1 小时有效的 token
 async function generateHourlyToken(key: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
-  // 精确到小时，token 1 小时内有效
   const hourTimestamp = Math.floor(Date.now() / 3600000).toString();
   const data = encoder.encode(key + secret + hourTimestamp);
   const hashBuffer = await crypto.subtle.digest('SHA-256', data);
