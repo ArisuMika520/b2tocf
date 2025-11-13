@@ -3,6 +3,7 @@
 import {
   S3Client,
   GetObjectCommand,
+  PutObjectCommand,
 } from '@aws-sdk/client-s3';
 
 import { DOMParser } from '@xmldom/xmldom';
@@ -72,13 +73,22 @@ export default {
 
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS, POST',
       'Access-Control-Allow-Headers': '*',
     };
 
     try {
       if (request.method === 'OPTIONS') {
         return new Response(null, { status: 204, headers: corsHeaders });
+      }
+
+      if (request.method === 'POST') {
+        return await handleUpload(
+          request,
+          env,
+          ctx,
+          corsHeaders
+        );
       }
 
       if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -236,6 +246,79 @@ async function handleCachedProxy(
   }
 
   return response;
+}
+
+// 上传处理
+async function handleUpload(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  corsHeaders: Record<string, string>,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const headers = new Headers(corsHeaders);
+  headers.set('Content-Type', 'application/json');
+
+  const authHeader = request.headers.get('Authorization');
+  const expectedToken = `Bearer ${env.URL_SECRET_KEY}`;
+  if (!authHeader || authHeader !== expectedToken) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers,
+    });
+  }
+
+  let key = url.pathname.substring(1);
+  if (!key) {
+    return new Response(JSON.stringify({ error: 'Missing upload key in URL path' }), {
+      status: 400,
+      headers,
+    });
+  }
+
+  try {
+    key = decodeURIComponent(key);
+  } catch (error) {
+    return new Response(JSON.stringify({ error: 'Invalid key encoding' }), {
+      status: 400,
+      headers,
+    });
+  }
+
+  const contentType = request.headers.get('content-type') || 'application/octet-stream';
+  const contentLength = request.headers.get('content-length');
+
+  const s3Client = getS3Client(env);
+
+  const putCommand = new PutObjectCommand({
+    Bucket: env.B2_BUCKET_NAME,
+    Key: key,
+    Body: request.body,
+    ContentType: contentType,
+  });
+
+  if (contentLength) {
+    // @ts-ignore - 将 ContentLength 追加到请求
+    putCommand.input.ContentLength = Number(contentLength);
+  }
+
+  await s3Client.send(putCommand);
+
+  const cache = (caches as any).default;
+  const cacheRequest = new Request(`${url.origin}${url.pathname}`);
+  ctx.waitUntil(cache.delete(cacheRequest));
+
+  const token = await generateHourlyToken(key, env.URL_SECRET_KEY);
+
+  return new Response(JSON.stringify({
+    message: 'Upload successful',
+    key,
+    token,
+    contentType,
+  }), {
+    status: 200,
+    headers,
+  });
 }
 
 // 直接代理 - 使用 SDK 直接流式传输

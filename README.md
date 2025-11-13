@@ -2,12 +2,13 @@
 
 一个基于 Cloudflare Workers 的 Backblaze B2 存储代理服务，提供高速、安全的文件下载服务。
 
-可以对接基于S3标准的第三方存储挂载，针对B2进行了URL请求标准转换
+可以对接基于S3标准的第三方存储挂载，针对B2进行了URL请求标准转换，新增图床专用上传接口。
 
 ## 功能
 
-- **直接流式传输** - 使用 AWS S3 SDK 直接流式传输，下载流畅无卡顿（受cpu limited影响，可能有些波动，但不影响整体速度）
-- **安全访问控制** - 基于时间戳的 Token 验证机制（1小时有效期）
+- **图床上传接口** - 直接向 Worker `POST` 图片或其他文件，自动写入 B2，对应下载链接立即可用
+- **直接流式传输** - 使用 AWS S3 SDK 直接流式传输，下载流畅无卡顿（受 CPU 限制影响，可能有短暂波动）
+- **安全访问控制** - 上传使用 `Authorization` 头验证，下载使用基于时间戳的 Token（1 小时有效）
 - **智能缓存** - 支持两种模式：直接代理和缓存代理
 - **断点续传** - 完整支持 HTTP Range 请求
 - **全球加速** - 利用 Cloudflare 全球 CDN 网络加速访问
@@ -87,7 +88,18 @@ wrangler secret put URL_SECRET_KEY
 npm run dev
 ```
 
-访问 `http://localhost:8787/your-file-path` 测试
+访问 `http://localhost:8787/your-file-path` 测试下载接口
+
+#### 上传接口本地测试示例
+
+```bash
+# 将本地 test.jpg 上传到 B2（存储路径 images/test.jpg）
+curl -X POST \
+  "http://localhost:8787/images/test.jpg" \
+  -H "Authorization: Bearer <你的URL_SECRET_KEY>" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary "@test.jpg"
+```
 
 ### 6. 部署到 Cloudflare （我推荐你使用git部署，cf会自动拉取最新版本）
 
@@ -133,6 +145,25 @@ https://your-worker.dev/path/to/file.zip?mode=cache
 
 ```
 https://your-worker.dev/path/to/file.zip?token=your-token
+```
+
+### 上传接口
+
+```
+POST https://your-worker.dev/path/to/image.png
+Header: Authorization: Bearer <URL_SECRET_KEY>
+Body: 二进制文件或任意流（推荐设置 Content-Type）
+```
+
+**返回示例**
+
+```json
+{
+  "message": "Upload successful",
+  "key": "images/demo.png",
+  "token": "c0ffee1234567890",
+  "contentType": "image/png"
+}
 ```
 
 ### 断点续传
@@ -240,6 +271,13 @@ A:
 2. 确认 B2 Bucket 权限设置
 3. 查看 Worker 日志：`wrangler tail`
 
+### Q: 上传提示 Unauthorized？
+
+A:
+1. 确认请求头 `Authorization: Bearer <URL_SECRET_KEY>` 是否正确
+2. 确认 Worker 已配置 `URL_SECRET_KEY`
+3. 如果使用浏览器上传，确保已开启 HTTPS 并使用正确的 Header
+
 ## 许可证
 
 MIT License
@@ -257,4 +295,12 @@ MIT License
 ---
 
 ⭐ 如果这个项目对你有帮助，请给个 Star！
+
+# 图床接口速查
+
+| 操作 | 方法 | 路径示例 | Header | 备注 |
+|------|------|----------|--------|------|
+| 上传 | `POST` | `/images/demo.png` | `Authorization: Bearer <URL_SECRET_KEY>` | Body 为实际文件流 |
+| 下载 | `GET` | `/images/demo.png` | 可选 `token` 参数 | 支持断点续传 |
+| 缓存下载 | `GET` | `/images/demo.png?mode=cache` | 可选 `token` 参数 | Cloudflare 缓存 24 小时 |
 
