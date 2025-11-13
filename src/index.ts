@@ -57,6 +57,20 @@ async function generateHourlyToken(key: string, secret: string): Promise<string>
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
 }
 
+function getContentDisposition(filename: string, contentType?: string): string {
+  if (contentType) {
+    const lower = contentType.toLowerCase();
+    const inlinePrefixes = ['image/', 'text/', 'audio/', 'video/'];
+    const inlineTypes = ['application/pdf', 'application/json'];
+
+    if (inlinePrefixes.some(prefix => lower.startsWith(prefix)) || inlineTypes.includes(lower)) {
+      return `inline; filename="${filename}"`;
+    }
+  }
+
+  return `attachment; filename="${filename}"`;
+}
+
 // 4. 验证 token
 async function verifyToken(key: string, token: string, secret: string): Promise<boolean> {
   const currentToken = await generateHourlyToken(key, secret);
@@ -204,7 +218,8 @@ async function handleCachedProxy(
     const headers = new Headers(corsHeaders);
     headers.set('Cache-Control', 'public, max-age=86400');
     headers.set('Accept-Ranges', 'bytes');
-    headers.set('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+    const disposition = getContentDisposition(encodeURIComponent(filename), s3Response.ContentType || undefined);
+    headers.set('Content-Disposition', disposition);
     headers.set('X-Cache-Status', 'MISS');
     headers.set('X-Token', token);
 
@@ -344,7 +359,8 @@ async function handleDirectProxy(
   const headers = new Headers(corsHeaders);
   headers.set('Cache-Control', 'public, max-age=14400');
   headers.set('Accept-Ranges', 'bytes');
-  headers.set('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+  const disposition = getContentDisposition(encodeURIComponent(filename), s3Response.ContentType || undefined);
+  headers.set('Content-Disposition', disposition);
   headers.set('X-Token', token);
 
   if (s3Response.ContentType) {
