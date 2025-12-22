@@ -1,8 +1,8 @@
 # B2 to Cloudflare Worker Proxy
 
-一个基于 Cloudflare Workers 的 Backblaze B2 存储代理服务，提供高速、安全的文件下载服务。
+一个基于 Cloudflare Workers 的存储代理服务，提供高速、安全的文件下载服务。
 
-可以对接基于S3标准的第三方存储挂载，针对B2进行了URL请求标准转换
+可以对接基于S3标准的第三方存储挂载
 
 专门用作图床用途的话建议使用imagehost的分支branch
 
@@ -36,17 +36,16 @@ cd b2tocf
 npm install
 ```
 
-### 3. 配置 Backblaze B2
+### 3. 配置 S3
 
-1. 登录 [Backblaze B2 控制台](https://secure.backblaze.com/user_signin.htm)
+1. 登录
 2. 创建一个 Bucket（或使用现有的）
-3. 创建 Application Key：
+3. 创建 Application Key(不同服务商不一样，自行配置)：
    - 进入 **App Keys** 页面
    - 点击 **Add a New Application Key**
    - 记录 `keyID` 和 `applicationKey`
 4. 获取 S3 Endpoint：
    - 在 Bucket 详情页找到 **Endpoint**
-   - 格式类似：`s3.us-west-004.backblazeb2.com`
 
 ### 4. 配置 Cloudflare Worker
 
@@ -113,7 +112,7 @@ https://your-worker.dev/path/to/file.zip
 https://your-worker.dev/path/to/file.zip
 ```
 
-- 实时从 B2 获取文件
+- 实时获取文件
 - 适合不常访问的大文件
 - 缓存时间：4小时
 
@@ -183,7 +182,6 @@ curl -H "Range: bytes=0-1023" https://your-worker.dev/path/to/file.zip
 - [Cloudflare Workers](https://workers.cloudflare.com/) - 边缘计算平台
 - [AWS SDK for JavaScript v3](https://github.com/aws/aws-sdk-js-v3) - S3 客户端
 - [TypeScript](https://www.typescriptlang.org/) - 类型安全
-- [Backblaze B2](https://www.backblaze.com/b2/) - 对象存储
 
 ## 开发命令
 
@@ -239,7 +237,7 @@ A: Token 有效期为1小时，请刷新页面获取新的 URL（系统会自动
 
 A:
 1. 检查文件路径是否正确
-2. 确认 B2 Bucket 权限设置
+2. 确认 Bucket 权限设置
 3. 查看 Worker 日志：`wrangler tail`
 
 ## 开源声明 / 开源协议
