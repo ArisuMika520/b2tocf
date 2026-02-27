@@ -19,14 +19,14 @@
 
 - [Node.js](https://nodejs.org/) 18+
 - [Cloudflare 账号](https://dash.cloudflare.com/sign-up)
-- [Backblaze B2 账号](https://www.backblaze.com/b2/sign-up.html)
+- 其他支持S3标准的存储账号
 
 ## 开始
 
 ### 1. 克隆项目
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/ArisuMika520/b2tocf.git
 cd b2tocf
 ```
 
